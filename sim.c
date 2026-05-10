@@ -80,7 +80,7 @@ int main(int argc, char *argv[]) {
         positions[i].y = 300 + 200 * sin(i * 2 * PI / numNodes);
     }
 
-    // Animation state variables [cite: 80]
+    // Animation state variables
     bool isPlaying = false;
     float timer = 0.0f;
     int currentIdx = 0;
@@ -89,7 +89,7 @@ int main(int argc, char *argv[]) {
     bool reachedEnd = false;
 
     while (!WindowShouldClose()) {
-        // --- Logic Update Section ---
+        // Logic Update Section 
         if (isPlaying && !reachedEnd && pathSize > 1) {
             timer += GetFrameTime();
             
@@ -99,11 +99,11 @@ int main(int argc, char *argv[]) {
 
             float waitTime = (currentIdx > 0 && currentJump == 0) ? 1.0f : 0.0f; // Wait 1s at nodes [cite: 80]
 
-            if (timer >= (waitTime + 0.3f)) { // 300ms per jump [cite: 80]
+            if (timer >= (waitTime + 0.3f)) { // 300ms per jump 
                 currentJump++;
                 timer = 0.0f; 
 
-                // Linear interpolation for jumps [cite: 80]
+                // Linear interpolation for jumps 
                 entityPos.x = positions[u].x + (positions[v].x - positions[u].x) * ((float)currentJump / w);
                 entityPos.y = positions[u].y + (positions[v].y - positions[u].y) * ((float)currentJump / w);
 
@@ -115,17 +115,17 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        // Button interaction logic [cite: 80]
+        // Button interaction logic 
         if (IsMouseButtonPressed(MOUSE_LEFT_BUTTON)) {
             Rectangle btn = { 10, 10, 100, 40 };
             if (CheckCollisionPointRec(GetMousePosition(), btn)) isPlaying = !isPlaying;
         }
 
-        // --- Drawing Section ---
+        // Drawing Section 
         BeginDrawing();
         ClearBackground(RAYWHITE);
 
-        // Draw Edges [cite: 44, 49]
+        // Draw Edges 
         for (int i = 0; i < numNodes; i++) {
             for (int j = 0; j < numNodes; j++) {
                 if (adj[i][j] != INF && i != j) {
@@ -135,28 +135,28 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        // Draw Nodes [cite: 44, 49]
+        // Draw Nodes 
         for (int i = 0; i < numNodes; i++) {
             DrawCircle(positions[i].x, positions[i].y, 25, (i == src || i == dst) ? GOLD : BLUE);
             DrawText(TextFormat("%d", i), positions[i].x - 5, positions[i].y - 5, 20, WHITE);
         }
 
-        // Draw Moving Entity [cite: 80]
+        // Draw Moving Entity 
         if (pathSize > 0) {
             DrawCircleV(entityPos, 15, RED);
         }
 
-        // Draw UI Elements [cite: 80, 81]
+        // Draw UI Elements 
         DrawRectangle(10, 10, 100, 40, DARKGRAY);
         DrawText(isPlaying ? "STOP" : "PLAY", 30, 20, 20, WHITE);
 
         if (reachedEnd) {
             DrawRectangle(250, 250, 300, 100, LIGHTGRAY);
-            DrawText("TARGET REACHED!", 270, 285, 25, DARKGREEN); // [cite: 81]
+            DrawText("TARGET REACHED!", 270, 285, 25, DARKGREEN); 
         }
 
         if (pathSize == 0) {
-            DrawText("NO PATH FOUND", 10, 60, 20, MAROON); // [cite: 14]
+            DrawText("NO PATH FOUND", 10, 60, 20, MAROON); 
         }
 
         EndDrawing();
