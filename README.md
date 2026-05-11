@@ -5,7 +5,6 @@ Students:
 - Malek Dibs
 - Doaa Abdeen
 - Ibrahim Hirbawi
-- Mayar Abuarafeh
 
 ========================================
 Project Description
