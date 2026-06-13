@@ -1,32 +1,33 @@
 # OS Project - Milestones 1 to 6
+# Build system for Dijkstra graph simulation project
 
 CC = gcc
 CFLAGS = -lraylib -lGL -lm -lpthread -ldl -lrt -lX11
 
-# First milestone: run Dijkstra in terminal
+# Milestone 1: terminal-based Dijkstra shortest path
 milestone1:
 	$(CC) dijkstra.c -o dijkstra
 
-# Show the graph on screen
+# Milestone 2: display graph visualization using raylib
 milestone2:
 	$(CC) sim.c -o sim $(CFLAGS)
 
-# Animate a single traveler
+# Milestone 3: animate single traveler on graph
 milestone3:
 	$(CC) sim.c -o sim $(CFLAGS)
 
-# Add multiple travelers with fork()
+# Milestone 4: multiple travelers using fork()
 milestone4:
 	$(CC) sim.c -o sim $(CFLAGS)
 
-# Use pipes for communication between processes
+# Milestone 5: inter-process communication using pipes
 milestone5:
 	$(CC) sim.c -o sim $(CFLAGS)
 
-# Use semaphores to control junction access
+# Milestone 6: synchronization using semaphores
 milestone6:
 	$(CC) sim.c -o sim $(CFLAGS)
 
-# Delete executable files
+# Clean build files
 clean:
 	rm -f dijkstra sim
