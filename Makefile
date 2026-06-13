@@ -1,31 +1,32 @@
-# Makefile for Operating Systems Project - Milestones 1-6
-CC     = gcc
+# OS Project - Milestones 1 to 6
+
+CC = gcc
 CFLAGS = -lraylib -lGL -lm -lpthread -ldl -lrt -lX11
 
-# ── Milestone 1 : Dijkstra logic (terminal only) ──────────────────────
+# First milestone: run Dijkstra in terminal
 milestone1:
 	$(CC) dijkstra.c -o dijkstra
 
-# ── Milestone 2 : Static graph GUI ───────────────────────────────────
+# Show the graph on screen
 milestone2:
 	$(CC) sim.c -o sim $(CFLAGS)
 
-# ── Milestone 3 : Animated single traveler ───────────────────────────
+# Animate a single traveler
 milestone3:
 	$(CC) sim.c -o sim $(CFLAGS)
 
-# ── Milestone 4 : Multiple travelers with fork() ─────────────────────
+# Add multiple travelers with fork()
 milestone4:
 	$(CC) sim.c -o sim $(CFLAGS)
 
-# ── Milestone 5 : Children compute own routes, IPC via pipes ─────────
+# Use pipes for communication between processes
 milestone5:
 	$(CC) sim.c -o sim $(CFLAGS)
 
-# ── Milestone 6 : Synchronized junctions (semaphores) ────────────────
+# Use semaphores to control junction access
 milestone6:
 	$(CC) sim.c -o sim $(CFLAGS)
 
-# ── Remove compiled binaries ─────────────────────────────────────────
+# Delete executable files
 clean:
 	rm -f dijkstra sim
