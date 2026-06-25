@@ -1,16 +1,22 @@
-// sim.c - OS Project (Milestones 2-6)
+// sim.c - OS Project (Milestones 2-7)
 //
 // Milestone 2-3: single traveler with raylib animation (backward compatible)
 // Milestone 4: multiple travelers using fork(), parent handles GUI
 // Milestone 5: each child runs Dijkstra and sends position updates to parent using pipes
 // Milestone 6: synchronized junctions using POSIX semaphores in shared memory
-// Only one traveler can stay in a node at a time
+//              Only one traveler can stay in a node at a time
+// Milestone 7: scheduling algorithms (FCFS / SJF) chosen at runtime.
+//              The PARENT manages a waiting queue per node and decides who enters
+//              next instead of letting the kernel pick (the random order of M6).
 //
-// IPC: unnamed pipes for child to parent communication
-// Sync: shared memory (mmap) and semaphores (pshared = 1)
+// IPC: unnamed pipes for child -> parent communication
+// Sync (M6): one semaphore per node in shared memory (pshared = 1)
+// Sched (M7): one "go" semaphore per traveler; parent posts it to grant entry
 //
 // Compile: gcc sim.c -o sim -lraylib -lGL -lm -lpthread -ldl -lrt -lX11
-// Run: ./sim <input_file>
+// Run (M2-M6): ./sim <input_file>
+// Run (M7):    ./sim -schd fcfs <input_file>
+//              ./sim -schd sjf  <input_file>
 
 #include "raylib.h"
 #include <stdio.h>
@@ -35,29 +41,50 @@
 
 // message types from child to parent
 typedef enum {
-    MSG_WAITING = 0,
-    MSG_ARRIVED = 1,
-    MSG_DEPARTING = 2,
-    MSG_FINISHED = 3,
+    MSG_WAITING   = 0,   // child requests to enter to_node (carries job size)
+    MSG_ARRIVED   = 1,   // child entered to_node
+    MSG_DEPARTING = 2,   // child left from_node, moving to to_node (frees from_node)
+    MSG_FINISHED  = 3,    // child reached destination (frees from_node = last node)
 } MsgType;
+
+// scheduling algorithm (Milestone 7)
+typedef enum {
+    SCHED_NONE = 0,   // default (M2-M6): kernel decides order via node semaphores
+    SCHED_FCFS = 1,   // First Come First Served: earliest request enters first
+    SCHED_SJF  = 2,    // Shortest Job First: smallest remaining cost enters first
+} SchedAlgo;
 
 typedef struct {
     MsgType type;
-    pid_t pid;
-    int from_node;
-    int to_node;
-    int next_node;
-    int weight;
+    pid_t   pid;
+    int     tindex;     // traveler index (which child)
+    int     from_node;
+    int     to_node;
+    int     next_node;
+    int     weight;
+    int     job;        // remaining cost to destination (used by SJF)
 } Message;
 
-// shared memory with one semaphore per node
+// shared memory: one semaphore per node (M6) + one "go" semaphore per traveler (M7)
 typedef struct {
-    sem_t node_sem[MAX_NODES];
+    sem_t node_sem[MAX_NODES];      // M6: mutual exclusion, kernel picks waiter
+    sem_t go_sem[MAX_TRAVELERS];    // M7: parent grants entry to a specific child
 } SharedData;
 
 // graph data (read only after fork)
 static int g_n;
 static int g_adj[MAX_NODES][MAX_NODES];
+
+// selected scheduler (set from the command line in main)
+static SchedAlgo g_sched = SCHED_NONE;
+
+// ---- parent-side scheduling state (Milestone 7) ----
+static int sch_busy[MAX_NODES];                 // -1 if node free, else traveler index inside it
+static int sch_q[MAX_NODES][MAX_TRAVELERS];     // waiting traveler indices, per node
+static int sch_qlen[MAX_NODES];                 // queue length per node
+static int sch_job[MAX_TRAVELERS];              // last requested job size (for SJF)
+static int sch_seq[MAX_TRAVELERS];              // arrival order stamp (for FCFS)
+static int sch_seqctr = 0;                      // global counter for arrival order
 
 // Dijkstra shortest path
 static int dijkstra(int src, int dst, int *path) {
@@ -106,69 +133,101 @@ static int dijkstra(int src, int dst, int *path) {
     return cnt;
 }
 
+// sum of edge weights from path[i] to the end of the path (remaining cost)
+static int remaining_cost(int *path, int psz, int i) {
+    int rem = 0;
+    for (int k = i; k < psz - 1; k++)
+        rem += g_adj[path[k]][path[k + 1]];
+    return rem;
+}
+
 // child process logic
-// computes path, uses semaphores, sends updates to parent
-static void child_run(int src, int dst, int wfd, SharedData *sh) {
+// computes path, then for each node either self-locks (M6) or asks the parent
+// for permission (M7) and waits on its personal go_sem until granted.
+static void child_run(int ti, int src, int dst, int wfd, SharedData *sh) {
 
     int path[MAX_NODES];
     int psz = dijkstra(src, dst, path);
 
     Message m = {0};
-    m.pid = getpid();
+    m.pid    = getpid();
+    m.tindex = ti;
 
     if (psz == 0) {
-        m.type = MSG_FINISHED;
-        m.from_node = -1;
-        m.to_node = dst;
+        m.type      = MSG_FINISHED;
+        m.from_node = -1;          // no node to free
+        m.to_node   = dst;
         write(wfd, &m, sizeof m);
         close(wfd);
         exit(0);
     }
 
-    // request first node
-    m.type = MSG_WAITING;
-    m.to_node = path[0];
+    // ---- request the first node ----
+    m.type      = MSG_WAITING;
+    m.from_node = -1;
+    m.to_node   = path[0];
+    m.job       = remaining_cost(path, psz, 0);
+    m.next_node = (psz > 1) ? path[1] : -1;
     write(wfd, &m, sizeof m);
 
-    sem_wait(&sh->node_sem[path[0]]);
+    // block until allowed to enter
+    if (g_sched == SCHED_NONE)
+        sem_wait(&sh->node_sem[path[0]]);   // M6: kernel picks the waiter
+    else
+        sem_wait(&sh->go_sem[ti]);          // M7: parent grants this child
 
-    m.type = MSG_ARRIVED;
+    m.type    = MSG_ARRIVED;
+    m.to_node = path[0];
     write(wfd, &m, sizeof m);
 
     sleep(1);
 
-    // move through path
+    // ---- move through the path ----
     for (int i = 0; i < psz - 1; i++) {
 
         int u = path[i];
         int v = path[i + 1];
         int w = g_adj[u][v];
 
-        sem_post(&sh->node_sem[u]);
+        // leave node u (free it for the next traveler)
+        if (g_sched == SCHED_NONE)
+            sem_post(&sh->node_sem[u]);
 
-        m.type = MSG_DEPARTING;
+        m.type      = MSG_DEPARTING;
         m.from_node = u;
-        m.to_node = v;
-        m.weight = w;
+        m.to_node   = v;
+        m.weight    = w;
         write(wfd, &m, sizeof m);
 
-        usleep((useconds_t)w * STEP_US);
+        usleep((useconds_t)w * STEP_US);   // travel time, holding no node
 
-        m.type = MSG_WAITING;
-        m.to_node = v;
+        // request the next node v
+        m.type      = MSG_WAITING;
+        m.from_node = u;
+        m.to_node   = v;
+        m.job       = remaining_cost(path, psz, i + 1);
+        m.next_node = (i + 2 < psz) ? path[i + 2] : -1;
         write(wfd, &m, sizeof m);
 
-        sem_wait(&sh->node_sem[v]);
+        if (g_sched == SCHED_NONE)
+            sem_wait(&sh->node_sem[v]);
+        else
+            sem_wait(&sh->go_sem[ti]);
 
-        m.type = MSG_ARRIVED;
+        m.type    = MSG_ARRIVED;
+        m.to_node = v;
         write(wfd, &m, sizeof m);
 
         sleep(1);
     }
 
-    sem_post(&sh->node_sem[path[psz - 1]]);
+    // ---- release the final node ----
+    if (g_sched == SCHED_NONE)
+        sem_post(&sh->node_sem[path[psz - 1]]);
 
-    m.type = MSG_FINISHED;
+    m.type      = MSG_FINISHED;
+    m.from_node = path[psz - 1];   // tell parent which node to free
+    m.next_node = -1;
     write(wfd, &m, sizeof m);
 
     close(wfd);
@@ -307,11 +366,61 @@ typedef struct {
     int src, dst;
 } TVis;
 
-// Multi traveler GUI (Milestones 4-6)
+// ---- Milestone 7 scheduler helpers (parent only) ----
+
+// add traveler ti to node v's waiting queue, stamping arrival order and job size
+static void sched_enqueue(int v, int ti, int job) {
+    sch_job[ti] = job;
+    sch_seq[ti] = sch_seqctr++;
+    sch_q[v][sch_qlen[v]++] = ti;
+}
+
+// if node v is free and someone is waiting, pick the winner by the chosen
+// algorithm, remove it from the queue, mark the node busy and wake the child.
+static void sched_dispatch(int v, SharedData *sh) {
+    if (sch_busy[v] != -1)   return;   // node still occupied
+    if (sch_qlen[v] == 0)    return;   // nobody waiting
+
+    int pick = 0;   // index inside the queue array
+
+    if (g_sched == SCHED_SJF) {
+        // smallest remaining cost wins; tie -> earlier arrival
+        for (int k = 1; k < sch_qlen[v]; k++) {
+            int a = sch_q[v][k], b = sch_q[v][pick];
+            if (sch_job[a] < sch_job[b] ||
+               (sch_job[a] == sch_job[b] && sch_seq[a] < sch_seq[b]))
+                pick = k;
+        }
+    } else {
+        // FCFS: earliest arrival stamp wins
+        for (int k = 1; k < sch_qlen[v]; k++)
+            if (sch_seq[sch_q[v][k]] < sch_seq[sch_q[v][pick]])
+                pick = k;
+    }
+
+    int winner = sch_q[v][pick];
+
+    // remove winner from the queue (shift the rest left)
+    for (int k = pick; k < sch_qlen[v] - 1; k++)
+        sch_q[v][k] = sch_q[v][k + 1];
+    sch_qlen[v]--;
+
+    sch_busy[v] = winner;            // node is now owned by the winner
+    sem_post(&sh->go_sem[winner]);   // wake exactly that child
+}
+
+// Multi traveler GUI (Milestones 4-7)
 static void run_multi(int nt, int *src, int *dst,
-                      int *rfds, pid_t *pids, NodePos *pos) {
+                      int *rfds, pid_t *pids, NodePos *pos, SharedData *sh) {
     TVis tv[MAX_TRAVELERS];
     memset(tv, 0, sizeof tv);
+
+    // reset scheduler state (M7)
+    for (int i = 0; i < MAX_NODES; i++) {
+        sch_busy[i]  = -1;
+        sch_qlen[i]  = 0;
+    }
+    sch_seqctr = 0;
 
     for (int i = 0; i < nt; i++) {
         tv[i].pid = pids[i];
@@ -347,6 +456,12 @@ static void run_multi(int nt, int *src, int *dst,
                     float ang = i * (2.0f * PI / nt);
                     tv[i].vx = pos[m.to_node].x + 44.0f * cosf(ang);
                     tv[i].vy = pos[m.to_node].y + 44.0f * sinf(ang);
+
+                    // M7: register the request and try to let someone in
+                    if (g_sched != SCHED_NONE) {
+                        sched_enqueue(m.to_node, i, m.job);
+                        sched_dispatch(m.to_node, sh);
+                    }
                     break;
                 }
 
@@ -377,6 +492,12 @@ static void run_multi(int nt, int *src, int *dst,
                         : 0.001f;
 
                     tv[i].tr_elap = 0.0f;
+
+                    // M7: leaving from_node frees it -> schedule next waiter
+                    if (g_sched != SCHED_NONE && m.from_node >= 0) {
+                        sch_busy[m.from_node] = -1;
+                        sched_dispatch(m.from_node, sh);
+                    }
                     break;
 
                 case MSG_FINISHED:
@@ -386,6 +507,12 @@ static void run_multi(int nt, int *src, int *dst,
 
                     printf("[PID=%d] finished\n", m.pid);
                     fflush(stdout);
+
+                    // M7: free the node it finished on -> schedule next waiter
+                    if (g_sched != SCHED_NONE && m.from_node >= 0) {
+                        sch_busy[m.from_node] = -1;
+                        sched_dispatch(m.from_node, sh);
+                    }
 
                     kill(m.pid, SIGTERM);
                     done_cnt++;
@@ -463,8 +590,14 @@ static void run_multi(int nt, int *src, int *dst,
                 DrawText(TextFormat("%d", i), ix - 5, iy - 7, 14, WHITE);
             }
         }
-    }
-}
+
+        // scheduler label (M7) - GUI clearly shows which algorithm is running
+        const char *algoName =
+            (g_sched == SCHED_FCFS) ? "FCFS" :
+            (g_sched == SCHED_SJF)  ? "SJF"  : "NONE (kernel)";
+        DrawText(TextFormat("Scheduler: %s", algoName),
+                 WIN_W - 250, 12, 20, MAROON);
+
         /* Legend */
         int lh = 10 + nt * 20 + 6;
         DrawRectangle(4, 4, 198, lh, (Color){240, 240, 240, 210});
@@ -484,6 +617,7 @@ static void run_multi(int nt, int *src, int *dst,
             DrawText("ALL TRAVELERS FINISHED",
                      (WIN_W - tw) / 2, WIN_H / 2 - 16, 26, DARKGREEN);
         }
+
         EndDrawing();
     }
 
@@ -498,13 +632,31 @@ static void run_multi(int nt, int *src, int *dst,
 
 // main
 int main(int argc, char *argv[]) {
-    if (argc < 2) {
-        printf("Usage: ./sim <file_name>\n");
+
+    // ---- parse command line: optional "-schd fcfs|sjf" + <file_name> ----
+    const char *fname = NULL;
+
+    for (int a = 1; a < argc; a++) {
+        if (strcmp(argv[a], "-schd") == 0 && a + 1 < argc) {
+            a++;
+            if      (strcmp(argv[a], "fcfs") == 0) g_sched = SCHED_FCFS;
+            else if (strcmp(argv[a], "sjf")  == 0) g_sched = SCHED_SJF;
+            else {
+                printf("Unknown scheduler '%s' (use fcfs or sjf)\n", argv[a]);
+                return 1;
+            }
+        } else {
+            fname = argv[a];   // last non-flag argument is the input file
+        }
+    }
+
+    if (!fname) {
+        printf("Usage: ./sim [-schd fcfs|sjf] <file_name>\n");
         return 1;
     }
 
     // read graph file
-    FILE *f = fopen(argv[1], "r");
+    FILE *f = fopen(fname, "r");
     if (!f) {
         perror("fopen");
         return 1;
@@ -532,7 +684,7 @@ int main(int argc, char *argv[]) {
     // parse travelers section
     // supports:
     // 1) single traveler: src dst
-    // 2) multiple travelers block
+    // 2) multiple travelers block (# travelers)
 
     int nt = 0;
     int tsrc[MAX_TRAVELERS], tdst[MAX_TRAVELERS];
@@ -550,6 +702,7 @@ int main(int argc, char *argv[]) {
         if (*p == '#') {
             if (strstr(p, "traveler")) {
                 if (fscanf(f, "%d", &nt) == 1 && nt > 0) {
+                    if (nt > MAX_TRAVELERS) nt = MAX_TRAVELERS;
                     for (int i = 0; i < nt; i++)
                         fscanf(f, "%d %d", &tsrc[i], &tdst[i]);
                 }
@@ -581,7 +734,7 @@ int main(int argc, char *argv[]) {
     NodePos pos[MAX_NODES];
     make_positions(pos);
 
-    // single traveler mode
+    // single traveler mode (scheduling is irrelevant with one traveler)
     if (nt == 1) {
         InitWindow(WIN_W, WIN_H, "OS Project - Graph Simulation");
         SetTargetFPS(60);
@@ -602,8 +755,13 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    // M6: one mutex per node, free (value 1)
     for (int i = 0; i < g_n; i++)
         sem_init(&sh->node_sem[i], 1, 1);
+
+    // M7: one "go" gate per traveler, locked (value 0) until the parent grants
+    for (int i = 0; i < nt; i++)
+        sem_init(&sh->go_sem[i], 1, 0);
 
     int rfds[MAX_TRAVELERS];
     pid_t pids[MAX_TRAVELERS];
@@ -629,7 +787,7 @@ int main(int argc, char *argv[]) {
             printf("[PID=%d] started\n", getpid());
             fflush(stdout);
 
-            child_run(tsrc[i], tdst[i], pfd[1], sh);
+            child_run(i, tsrc[i], tdst[i], pfd[1], sh);
         }
 
         close(pfd[1]);
@@ -641,10 +799,12 @@ int main(int argc, char *argv[]) {
     InitWindow(WIN_W, WIN_H, "OS Project - Synchronized Junctions");
     SetTargetFPS(60);
 
-    run_multi(nt, tsrc, tdst, rfds, pids, pos);
+    run_multi(nt, tsrc, tdst, rfds, pids, pos, sh);
 
     for (int i = 0; i < g_n; i++)
         sem_destroy(&sh->node_sem[i]);
+    for (int i = 0; i < nt; i++)
+        sem_destroy(&sh->go_sem[i]);
 
     munmap(sh, sizeof(SharedData));
 
