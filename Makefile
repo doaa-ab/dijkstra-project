@@ -1,4 +1,4 @@
-# OS Project - Milestones 1 to 6
+# OS Project - Milestones 1 to 7
 # Build system for Dijkstra graph simulation project
 
 CC = gcc
@@ -26,6 +26,10 @@ milestone5:
 
 # Milestone 6: synchronization using semaphores
 milestone6:
+	$(CC) sim.c -o sim $(CFLAGS)
+
+# Milestone 7: scheduling algorithms (FCFS / SJF) selected at runtime
+milestone7:
 	$(CC) sim.c -o sim $(CFLAGS)
 
 # Clean build files
