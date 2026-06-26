@@ -375,6 +375,7 @@ static void sched_enqueue(int v, int ti, int job) {
     sch_q[v][sch_qlen[v]++] = ti;
 }
 
+
 // if node v is free and someone is waiting, pick the winner by the chosen
 // algorithm, remove it from the queue, mark the node busy and wake the child.
 static void sched_dispatch(int v, SharedData *sh) {
@@ -400,6 +401,24 @@ static void sched_dispatch(int v, SharedData *sh) {
 
     int winner = sch_q[v][pick];
 
+    // ======== START EXAM MODIFICATION (Task B) ========
+    printf("\n--- Scheduler Decision for Node %d ---\n", v);
+    printf("Waiting Travelers: ");
+    for (int k = 0; k < sch_qlen[v]; k++) {
+        int tid = sch_q[v][k];
+        printf("T%d (Arrival Seq: %d, Remaining Job: %d) | ", tid, sch_seq[tid], sch_job[tid]);
+    }
+    printf("\nChosen Traveler: T%d\n", winner);
+    
+    if (g_sched == SCHED_SJF) {
+        printf("Reason: SJF (Shortest Job First) - T%d has the smallest remaining cost or tied but arrived earlier.\n", winner);
+    } else if (g_sched == SCHED_FCFS) {
+        printf("Reason: FCFS (First Come First Served) - T%d arrived first.\n", winner);
+    }
+    printf("--------------------------------------\n\n");
+    fflush(stdout);
+    // ======== END EXAM MODIFICATION ========
+
     // remove winner from the queue (shift the rest left)
     for (int k = pick; k < sch_qlen[v] - 1; k++)
         sch_q[v][k] = sch_q[v][k + 1];
@@ -408,7 +427,6 @@ static void sched_dispatch(int v, SharedData *sh) {
     sch_busy[v] = winner;            // node is now owned by the winner
     sem_post(&sh->go_sem[winner]);   // wake exactly that child
 }
-
 // Multi traveler GUI (Milestones 4-7)
 static void run_multi(int nt, int *src, int *dst,
                       int *rfds, pid_t *pids, NodePos *pos, SharedData *sh) {
