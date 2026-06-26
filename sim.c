@@ -144,7 +144,7 @@ static int remaining_cost(int *path, int psz, int i) {
 // child process logic
 // computes path, then for each node either self-locks (M6) or asks the parent
 // for permission (M7) and waits on its personal go_sem until granted.
-static void child_run(int ti, int src, int dst, int wfd, SharedData *sh) {
+static void child_run(int ti, int src, int dst, int wfd, int ack_rfd, SharedData *sh) {
 
     int path[MAX_NODES];
     int psz = dijkstra(src, dst, path);
@@ -181,6 +181,10 @@ static void child_run(int ti, int src, int dst, int wfd, SharedData *sh) {
     write(wfd, &m, sizeof m);
 
     sleep(1);
+                 char ack;
+                  if(m.next_node != -1){
+        read(ack_rfd, &ack, 1);
+    }
 
     // ---- move through the path ----
     for (int i = 0; i < psz - 1; i++) {
@@ -219,6 +223,11 @@ static void child_run(int ti, int src, int dst, int wfd, SharedData *sh) {
         write(wfd, &m, sizeof m);
 
         sleep(1);
+
+        char ack;
+                  if(m.next_node != -1){
+        read(ack_rfd, &ack, 1);
+     }
     }
 
     // ---- release the final node ----
@@ -411,7 +420,8 @@ static void sched_dispatch(int v, SharedData *sh) {
 
 // Multi traveler GUI (Milestones 4-7)
 static void run_multi(int nt, int *src, int *dst,
-                      int *rfds, pid_t *pids, NodePos *pos, SharedData *sh) {
+                      int *rfds, int *ack_wfds,
+                      pid_t *pids, NodePos *pos, SharedData *sh) {
     TVis tv[MAX_TRAVELERS];
     memset(tv, 0, sizeof tv);
 
@@ -478,7 +488,12 @@ static void run_multi(int nt, int *src, int *dst,
                     else
                         printf("[PID=%d] arrived at node %d | next %d\n", m.pid, m.to_node, m.next_node);
                     fflush(stdout);
-                    break;
+
+                    if (m.next_node != -1) {
+                        char ack = '1';
+                        write(ack_wfds[i], &ack, 1);
+                    }
+                         break;
 
                 case MSG_DEPARTING:
                     tv[i].in_tr = true;
@@ -764,12 +779,19 @@ int main(int argc, char *argv[]) {
         sem_init(&sh->go_sem[i], 1, 0);
 
     int rfds[MAX_TRAVELERS];
+    int ack_wfds[MAX_TRAVELERS];
     pid_t pids[MAX_TRAVELERS];
 
     for (int i = 0; i < nt; i++) {
         int pfd[2];
+        int ackfd[2];
 
         if (pipe(pfd) < 0) {
+            perror("pipe");
+            return 1;
+        }
+
+        if (pipe(ackfd) < 0){
             perror("pipe");
             return 1;
         }
@@ -782,24 +804,27 @@ int main(int argc, char *argv[]) {
         }
 
         if (pid == 0) {
+    
             close(pfd[0]);
+            close(ackfd[1]);
 
             printf("[PID=%d] started\n", getpid());
             fflush(stdout);
-
-            child_run(i, tsrc[i], tdst[i], pfd[1], sh);
-        }
+            child_run(i, tsrc[i], tdst[i], pfd[1], ackfd[0], sh);
+           }
 
         close(pfd[1]);
+        close(ackfd[0]);
 
         rfds[i] = pfd[0];
+        ack_wfds[i] = ackfd[1];
         pids[i] = pid;
     }
 
     InitWindow(WIN_W, WIN_H, "OS Project - Synchronized Junctions");
     SetTargetFPS(60);
 
-    run_multi(nt, tsrc, tdst, rfds, pids, pos, sh);
+    run_multi(nt, tsrc, tdst, rfds, ack_wfds, pids, pos, sh);
 
     for (int i = 0; i < g_n; i++)
         sem_destroy(&sh->node_sem[i]);
